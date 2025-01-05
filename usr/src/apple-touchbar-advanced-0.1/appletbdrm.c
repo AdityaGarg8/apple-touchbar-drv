@@ -13,6 +13,8 @@
 #include <linux/module.h>
 
 #include <drm/drm_drv.h>
+#include <drm/drm_atomic.h>
+#include <drm/drm_plane_helper.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_atomic_helper.h>
@@ -51,7 +53,9 @@ struct appletbdrm_device {
 	struct drm_device drm;
 	struct drm_display_mode mode;
 	struct drm_connector connector;
-	struct drm_simple_display_pipe pipe;
+	struct drm_plane primary_plane;
+	struct drm_crtc crtc;
+	struct drm_encoder encoder;
 
 	bool readiness_signal_received;
 };
@@ -401,18 +405,71 @@ static int appletbdrm_connector_helper_get_modes(struct drm_connector *connector
 	return drm_connector_helper_get_modes_fixed(connector, &adev->mode);
 }
 
-static enum drm_mode_status appletbdrm_pipe_mode_valid(struct drm_simple_display_pipe *pipe,
-						       const struct drm_display_mode *mode)
+static int appletbdrm_primary_plane_helper_atomic_check(struct drm_plane *plane,
+						   struct drm_atomic_state *state)
 {
-	struct drm_crtc *crtc = &pipe->crtc;
+	struct drm_plane_state *new_plane_state = drm_atomic_get_new_plane_state(state, plane);
+	struct drm_crtc *new_crtc = new_plane_state->crtc;
+	struct drm_crtc_state *new_crtc_state = NULL;
+	int ret;
+
+	if (new_crtc)
+		new_crtc_state = drm_atomic_get_new_crtc_state(state, new_crtc);
+
+	ret = drm_atomic_helper_check_plane_state(new_plane_state, new_crtc_state,
+						  DRM_PLANE_NO_SCALING,
+						  DRM_PLANE_NO_SCALING,
+						  false, false);
+	if (ret)
+		return ret;
+	else if (!new_plane_state->visible)
+		return 0;
+
+	return 0;
+}
+
+static void appletbdrm_primary_plane_helper_atomic_update(struct drm_plane *plane,
+						     struct drm_atomic_state *old_state)
+{
+	struct appletbdrm_device *adev = drm_to_adev(plane->dev);
+	struct drm_device *drm = plane->dev;
+	struct drm_plane_state *plane_state = plane->state;
+	struct drm_plane_state *old_plane_state = drm_atomic_get_old_plane_state(old_state, plane);
+	int idx;
+
+	if (!drm_dev_enter(drm, &idx))
+		return;
+
+	appletbdrm_flush_damage(adev, old_plane_state, plane_state);
+
+	drm_dev_exit(idx);
+}
+
+static const struct drm_plane_helper_funcs appletbdrm_primary_plane_helper_funcs = {
+	DRM_GEM_SHADOW_PLANE_HELPER_FUNCS,
+	.atomic_check = appletbdrm_primary_plane_helper_atomic_check,
+	.atomic_update = appletbdrm_primary_plane_helper_atomic_update,
+};
+
+static const struct drm_plane_funcs appletbdrm_primary_plane_funcs = {
+	.update_plane = drm_atomic_helper_update_plane,
+	.disable_plane = drm_atomic_helper_disable_plane,
+	.destroy = drm_plane_cleanup,
+	DRM_GEM_SHADOW_PLANE_FUNCS,
+};
+
+static enum drm_mode_status appletbdrm_crtc_helper_mode_valid(struct drm_crtc *crtc,
+							  const struct drm_display_mode *mode)
+{
 	struct appletbdrm_device *adev = drm_to_adev(crtc->dev);
 
 	return drm_crtc_helper_mode_valid_fixed(crtc, mode, &adev->mode);
 }
 
-static void appletbdrm_pipe_disable(struct drm_simple_display_pipe *pipe)
+static void appletbdrm_crtc_helper_atomic_disable(struct drm_crtc *crtc,
+					     struct drm_atomic_state *crtc_state)
 {
-	struct appletbdrm_device *adev = drm_to_adev(pipe->crtc.dev);
+	struct appletbdrm_device *adev = drm_to_adev(crtc->dev);
 	int idx;
 
 	if (!drm_dev_enter(&adev->drm, &idx))
@@ -423,22 +480,7 @@ static void appletbdrm_pipe_disable(struct drm_simple_display_pipe *pipe)
 	drm_dev_exit(idx);
 }
 
-static void appletbdrm_pipe_update(struct drm_simple_display_pipe *pipe,
-				   struct drm_plane_state *old_state)
-{
-	struct drm_crtc *crtc = &pipe->crtc;
-	struct appletbdrm_device *adev = drm_to_adev(crtc->dev);
-	int idx;
-
-	if (!crtc->state->active || !drm_dev_enter(&adev->drm, &idx))
-		return;
-
-	appletbdrm_flush_damage(adev, old_state, pipe->plane.state);
-
-	drm_dev_exit(idx);
-}
-
-static const u32 appletbdrm_formats[] = {
+static const u32 appletbdrm_primary_plane_formats[] = {
 	DRM_FORMAT_BGR888,
 	DRM_FORMAT_XRGB8888, /* emulated */
 };
@@ -461,11 +503,22 @@ static const struct drm_connector_helper_funcs appletbdrm_connector_helper_funcs
 	.get_modes = appletbdrm_connector_helper_get_modes,
 };
 
-static const struct drm_simple_display_pipe_funcs appletbdrm_pipe_funcs = {
-	DRM_GEM_SIMPLE_DISPLAY_PIPE_SHADOW_PLANE_FUNCS,
-	.update = appletbdrm_pipe_update,
-	.disable = appletbdrm_pipe_disable,
-	.mode_valid = appletbdrm_pipe_mode_valid,
+static const struct drm_crtc_helper_funcs appletbdrm_crtc_helper_funcs = {
+	.mode_valid = appletbdrm_crtc_helper_mode_valid,
+	.atomic_disable = appletbdrm_crtc_helper_atomic_disable,
+};
+
+static const struct drm_crtc_funcs appletbdrm_crtc_funcs = {
+	.reset = drm_atomic_helper_crtc_reset,
+	.destroy = drm_crtc_cleanup,
+	.set_config = drm_atomic_helper_set_config,
+	.page_flip = drm_atomic_helper_page_flip,
+	.atomic_duplicate_state = drm_atomic_helper_crtc_duplicate_state,
+	.atomic_destroy_state = drm_atomic_helper_crtc_destroy_state,
+};
+
+static const struct drm_encoder_funcs appletbdrm_encoder_funcs = {
+	.destroy = drm_encoder_cleanup,
 };
 
 DEFINE_DRM_GEM_FOPS(appletbdrm_drm_fops);
@@ -484,9 +537,37 @@ static const struct drm_driver appletbdrm_drm_driver = {
 static int appletbdrm_setup_mode_config(struct appletbdrm_device *adev)
 {
 	struct drm_connector *connector = &adev->connector;
+	struct drm_plane *primary_plane;
+	struct drm_crtc *crtc;
+	struct drm_encoder *encoder;
 	struct drm_device *drm = &adev->drm;
 	struct device *dev = adev->dev;
 	int ret;
+
+	primary_plane = &adev->primary_plane;
+	ret = drm_universal_plane_init(drm, primary_plane, 0,
+				       &appletbdrm_primary_plane_funcs,
+				       appletbdrm_primary_plane_formats,
+				       ARRAY_SIZE(appletbdrm_primary_plane_formats),
+				       NULL,
+				       DRM_PLANE_TYPE_PRIMARY, NULL);
+	if (ret)
+		return ret;
+	drm_plane_helper_add(primary_plane, &appletbdrm_primary_plane_helper_funcs);
+
+	crtc = &adev->crtc;
+	ret = drm_crtc_init_with_planes(drm, crtc, primary_plane, NULL,
+					&appletbdrm_crtc_funcs, NULL);
+	if (ret)
+		return ret;
+	drm_crtc_helper_add(crtc, &appletbdrm_crtc_helper_funcs);
+
+	encoder = &adev->encoder;
+	ret = drm_encoder_init(drm, encoder, &appletbdrm_encoder_funcs,
+			       DRM_MODE_ENCODER_DAC, NULL);
+	if (ret)
+		return ret;
+	encoder->possible_crtcs = drm_crtc_mask(crtc);
 
 	ret = drmm_mode_config_init(drm);
 	if (ret)
@@ -530,13 +611,13 @@ static int appletbdrm_setup_mode_config(struct appletbdrm_device *adev)
 	if (ret)
 		return dev_err_probe(dev, ret, "Failed to set non-desktop property\n");
 
-	ret = drm_simple_display_pipe_init(drm, &adev->pipe, &appletbdrm_pipe_funcs,
-					   appletbdrm_formats, ARRAY_SIZE(appletbdrm_formats),
-					   NULL, &adev->connector);
+	ret = drm_connector_attach_encoder(connector, encoder);
+
 	if (ret)
 		return dev_err_probe(dev, ret, "Failed to initialize simple display pipe\n");
 
-	drm_plane_enable_fb_damage_clips(&adev->pipe.plane);
+	drm_plane_helper_add(primary_plane, &appletbdrm_primary_plane_helper_funcs);
+	drm_plane_enable_fb_damage_clips(&adev->primary_plane);
 
 	drm_mode_config_reset(drm);
 

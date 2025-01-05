@@ -10,6 +10,7 @@
 
 #include <linux/hid.h>
 #include <linux/backlight.h>
+#include <linux/device.h>
 
 #include "hid-ids.h"
 
@@ -37,10 +38,10 @@ struct appletb_bl {
 	bool full_on;
 };
 
-const u8 appletb_bl_brightness_map[] = {
+static const u8 appletb_bl_brightness_map[] = {
 	APPLETB_BL_OFF,
 	APPLETB_BL_DIM,
-	APPLETB_BL_ON
+	APPLETB_BL_ON,
 };
 
 static int appletb_bl_set_brightness(struct appletb_bl *bl, u8 brightness)
@@ -84,14 +85,14 @@ static int appletb_bl_set_brightness(struct appletb_bl *bl, u8 brightness)
 static int appletb_bl_update_status(struct backlight_device *bdev)
 {
 	struct appletb_bl *bl = bl_get_data(bdev);
-	u16 brightness;
+	u8 brightness;
 
-	if (bdev->props.state & BL_CORE_SUSPENDED)
-		brightness = 0;
+	if (backlight_is_blank(bdev))
+		brightness = APPLETB_BL_OFF;
 	else
-		brightness = backlight_get_brightness(bdev);
+		brightness = appletb_bl_brightness_map[backlight_get_brightness(bdev)];
 
-	return appletb_bl_set_brightness(bl, appletb_bl_brightness_map[brightness]);
+	return appletb_bl_set_brightness(bl, brightness);
 }
 
 static const struct backlight_ops appletb_bl_backlight_ops = {
@@ -140,15 +141,12 @@ static int appletb_bl_probe(struct hid_device *hdev, const struct hid_device_id 
 	bl->aux1_field = aux1_field;
 	bl->brightness_field = brightness_field;
 
-	if (appletb_bl_def_brightness == 0)
-		ret = appletb_bl_set_brightness(bl, APPLETB_BL_OFF);
-	else if (appletb_bl_def_brightness == 1)
-		ret = appletb_bl_set_brightness(bl, APPLETB_BL_DIM);
-	else
-		ret = appletb_bl_set_brightness(bl, APPLETB_BL_ON);
+	ret = appletb_bl_set_brightness(bl,
+		appletb_bl_brightness_map[(appletb_bl_def_brightness > 2) ? 2 : appletb_bl_def_brightness]);
 
 	if (ret) {
-		dev_err_probe(dev, ret, "Failed to set touch bar brightness to off\n");
+		dev_err_probe(dev, ret, "Failed to set default touch bar brightness to %d\n",
+			      appletb_bl_def_brightness);
 		goto close_hw;
 	}
 
