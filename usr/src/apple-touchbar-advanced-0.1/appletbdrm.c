@@ -209,7 +209,7 @@ static int appletbdrm_send_request(struct appletbdrm_device *adev,
 	ret = usb_bulk_msg(udev, usb_sndbulkpipe(udev, adev->out_ep),
 			   request, size, &actual_size, APPLETBDRM_BULK_MSG_TIMEOUT);
 	if (ret) {
-		drm_err(drm, "Failed to send message (%pe)\n", ERR_PTR(ret));
+		drm_err(drm, "Failed to send message (%d)\n", ret);
 		return ret;
 	}
 
@@ -235,7 +235,7 @@ retry:
 	ret = usb_bulk_msg(udev, usb_rcvbulkpipe(udev, adev->in_ep),
 			   response, size, &actual_size, APPLETBDRM_BULK_MSG_TIMEOUT);
 	if (ret) {
-		drm_err(drm, "Failed to read response (%pe)\n", ERR_PTR(ret));
+		drm_err(drm, "Failed to read response (%d)\n", ret);
 		return ret;
 	}
 
@@ -391,7 +391,7 @@ static int appletbdrm_flush_damage(struct appletbdrm_device *adev,
 
 	ret = drm_gem_fb_begin_cpu_access(fb, DMA_FROM_DEVICE);
 	if (ret) {
-		drm_err(drm, "Failed to start CPU framebuffer access (%pe)\n", ERR_PTR(ret));
+		drm_err(drm, "Failed to start CPU framebuffer access (%d)\n", ret);
 		goto free_response;
 	}
 
@@ -423,7 +423,7 @@ static int appletbdrm_flush_damage(struct appletbdrm_device *adev,
 		ret = drm_fb_blit(&dst, NULL, DRM_FORMAT_BGR888,
 				  &shadow_plane_state->data[0], fb, &damage, &shadow_plane_state->fmtcnv_state);
 		if (ret) {
-			drm_err(drm, "Failed to copy damage clip (%pe)\n", ERR_PTR(ret));
+			drm_err(drm, "Failed to copy damage clip (%d)\n", ret);
 			goto end_fb_cpu_access;
 		}
 

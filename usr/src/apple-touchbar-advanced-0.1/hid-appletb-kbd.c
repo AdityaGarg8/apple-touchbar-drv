@@ -236,13 +236,13 @@ static void appletb_kbd_inp_event(struct input_handle *handle, unsigned int type
 
 	reset_inactivity_timer(kbd);
 
-	if (type == EV_KEY && code == KEY_FN && appletb_tb_fn_toggle) {
+	if (type == EV_KEY && code == KEY_FN && appletb_tb_fn_toggle &&
+		(kbd->current_mode == APPLETB_KBD_MODE_SPCL ||
+		 kbd->current_mode == APPLETB_KBD_MODE_FN)) {
 		if (value == 1) {
 			kbd->saved_mode = kbd->current_mode;
-			if (kbd->current_mode == APPLETB_KBD_MODE_SPCL)
-				appletb_kbd_set_mode(kbd, APPLETB_KBD_MODE_FN);
-			else if (kbd->current_mode == APPLETB_KBD_MODE_FN)
-				appletb_kbd_set_mode(kbd, APPLETB_KBD_MODE_SPCL);
+			appletb_kbd_set_mode(kbd, kbd->current_mode == APPLETB_KBD_MODE_SPCL
+						? APPLETB_KBD_MODE_FN : APPLETB_KBD_MODE_SPCL);
 		} else if (value == 0) {
 			if (kbd->saved_mode != kbd->current_mode)
 				appletb_kbd_set_mode(kbd, kbd->saved_mode);
@@ -497,7 +497,7 @@ static struct hid_driver appletb_kbd_hid_driver = {
 };
 module_hid_driver(appletb_kbd_hid_driver);
 
-/* The backlight driver should be loaded before the keyboard driver is initialised*/
+/* The backlight driver should be loaded before the keyboard driver is initialised */
 MODULE_SOFTDEP("pre: hid_appletb_bl");
 
 MODULE_AUTHOR("Ronald Tschalär");
