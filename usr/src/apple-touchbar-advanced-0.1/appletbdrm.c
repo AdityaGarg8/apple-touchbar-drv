@@ -544,6 +544,10 @@ static int appletbdrm_setup_mode_config(struct appletbdrm_device *adev)
 	struct device *dev = adev->dev;
 	int ret;
 
+	ret = drmm_mode_config_init(drm);
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to initialize mode configuration\n");
+
 	primary_plane = &adev->primary_plane;
 	ret = drm_universal_plane_init(drm, primary_plane, 0,
 				       &appletbdrm_primary_plane_funcs,
@@ -554,6 +558,7 @@ static int appletbdrm_setup_mode_config(struct appletbdrm_device *adev)
 	if (ret)
 		return ret;
 	drm_plane_helper_add(primary_plane, &appletbdrm_primary_plane_helper_funcs);
+	drm_plane_enable_fb_damage_clips(primary_plane);
 
 	crtc = &adev->crtc;
 	ret = drm_crtc_init_with_planes(drm, crtc, primary_plane, NULL,
@@ -568,10 +573,6 @@ static int appletbdrm_setup_mode_config(struct appletbdrm_device *adev)
 	if (ret)
 		return ret;
 	encoder->possible_crtcs = drm_crtc_mask(crtc);
-
-	ret = drmm_mode_config_init(drm);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to initialize mode configuration\n");
 
 	/*
 	 * The coordinate system used by the device is different from the
@@ -615,9 +616,6 @@ static int appletbdrm_setup_mode_config(struct appletbdrm_device *adev)
 
 	if (ret)
 		return dev_err_probe(dev, ret, "Failed to initialize simple display pipe\n");
-
-	drm_plane_helper_add(primary_plane, &appletbdrm_primary_plane_helper_funcs);
-	drm_plane_enable_fb_damage_clips(&adev->primary_plane);
 
 	drm_mode_config_reset(drm);
 
