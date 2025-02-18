@@ -449,10 +449,26 @@ static void appletbdrm_primary_plane_helper_atomic_update(struct drm_plane *plan
 	drm_dev_exit(idx);
 }
 
+static void appletbdrm_primary_plane_helper_atomic_disable(struct drm_plane *plane,
+							   struct drm_atomic_state *state)
+{
+	struct drm_device *dev = plane->dev;
+	struct appletbdrm_device *adev = drm_to_adev(dev);
+	int idx;
+
+	if (!drm_dev_enter(dev, &idx))
+		return;
+
+	appletbdrm_clear_display(adev);
+
+	drm_dev_exit(idx);
+}
+
 static const struct drm_plane_helper_funcs appletbdrm_primary_plane_helper_funcs = {
 	DRM_GEM_SHADOW_PLANE_HELPER_FUNCS,
 	.atomic_check = appletbdrm_primary_plane_helper_atomic_check,
 	.atomic_update = appletbdrm_primary_plane_helper_atomic_update,
+	.atomic_disable = appletbdrm_primary_plane_helper_atomic_disable,
 };
 
 static const struct drm_plane_funcs appletbdrm_primary_plane_funcs = {
@@ -468,20 +484,6 @@ static enum drm_mode_status appletbdrm_crtc_helper_mode_valid(struct drm_crtc *c
 	struct appletbdrm_device *adev = drm_to_adev(crtc->dev);
 
 	return drm_crtc_helper_mode_valid_fixed(crtc, mode, &adev->mode);
-}
-
-static void appletbdrm_crtc_helper_atomic_disable(struct drm_crtc *crtc,
-					     struct drm_atomic_state *crtc_state)
-{
-	struct appletbdrm_device *adev = drm_to_adev(crtc->dev);
-	int idx;
-
-	if (!drm_dev_enter(&adev->drm, &idx))
-		return;
-
-	appletbdrm_clear_display(adev);
-
-	drm_dev_exit(idx);
 }
 
 static const struct drm_mode_config_funcs appletbdrm_mode_config_funcs = {
@@ -504,7 +506,6 @@ static const struct drm_connector_helper_funcs appletbdrm_connector_helper_funcs
 
 static const struct drm_crtc_helper_funcs appletbdrm_crtc_helper_funcs = {
 	.mode_valid = appletbdrm_crtc_helper_mode_valid,
-	.atomic_disable = appletbdrm_crtc_helper_atomic_disable,
 };
 
 static const struct drm_crtc_funcs appletbdrm_crtc_funcs = {
@@ -526,7 +527,6 @@ static const struct drm_driver appletbdrm_drm_driver = {
 	DRM_GEM_SHMEM_DRIVER_OPS,
 	.name			= "appletbdrm",
 	.desc			= "Apple Touch Bar DRM Driver",
-	.date			= "20230910",
 	.major			= 1,
 	.minor			= 0,
 	.driver_features	= DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
@@ -580,6 +580,7 @@ static int appletbdrm_setup_mode_config(struct appletbdrm_device *adev)
 	 * as the height is actually the width of the framebuffer and vice
 	 * versa
 	 */
+
 	drm->mode_config.min_width = 0;
 	drm->mode_config.min_height = 0;
 	drm->mode_config.max_width = max(adev->height, DRM_SHADOW_PLANE_MAX_WIDTH);
