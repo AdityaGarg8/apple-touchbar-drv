@@ -19,6 +19,7 @@
 #include <drm/drm_encoder.h>
 #include <drm/drm_format_helper.h>
 #include <drm/drm_fourcc.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_gem_shmem_helper.h>
@@ -118,6 +119,7 @@ struct appletbdrm_fb_request_response {
 
 struct appletbdrm_device {
 	struct device *dev;
+	struct device *dmadev;
 
 	unsigned int in_ep;
 	unsigned int out_ep;
@@ -354,11 +356,13 @@ static int appletbdrm_flush_damage(struct appletbdrm_device *adev,
 		frame->height = cpu_to_le16(drm_rect_width(&damage));
 		frame->buf_size = cpu_to_le32(buf_size);
 
-		ret = drm_fb_blit(&dst, NULL, DRM_FORMAT_BGR888,
-				  &shadow_plane_state->data[0], fb, &damage, &shadow_plane_state->fmtcnv_state);
-		if (ret) {
-			drm_err(drm, "Failed to copy damage clip (%d)\n", ret);
-			goto end_fb_cpu_access;
+		switch (fb->format->format) {
+		case DRM_FORMAT_XRGB8888:
+			drm_fb_xrgb8888_to_bgr888(&dst, NULL, &shadow_plane_state->data[0], fb, &damage, &shadow_plane_state->fmtcnv_state);
+			break;
+		default:
+			drm_fb_memcpy(&dst, NULL, &shadow_plane_state->data[0], fb, &damage);
+			break;
 		}
 
 		frame = (void *)frame + struct_size(frame, buf, buf_size);
@@ -521,10 +525,22 @@ static const struct drm_encoder_funcs appletbdrm_encoder_funcs = {
 	.destroy = drm_encoder_cleanup,
 };
 
+static struct drm_gem_object *appletbdrm_driver_gem_prime_import(struct drm_device *dev,
+								 struct dma_buf *dma_buf)
+{
+	struct appletbdrm_device *adev = drm_to_adev(dev);
+
+	if (!adev->dmadev)
+		return ERR_PTR(-ENODEV);
+
+	return drm_gem_prime_import_dev(dev, dma_buf, adev->dmadev);
+}
+
 DEFINE_DRM_GEM_FOPS(appletbdrm_drm_fops);
 
 static const struct drm_driver appletbdrm_drm_driver = {
 	DRM_GEM_SHMEM_DRIVER_OPS,
+	.gem_prime_import	= appletbdrm_driver_gem_prime_import,
 	.name			= "appletbdrm",
 	.desc			= "Apple Touch Bar DRM Driver",
 	.major			= 1,
