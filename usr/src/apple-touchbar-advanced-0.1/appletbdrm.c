@@ -596,7 +596,6 @@ static int appletbdrm_setup_mode_config(struct appletbdrm_device *adev)
 	 * as the height is actually the width of the framebuffer and vice
 	 * versa
 	 */
-
 	drm->mode_config.min_width = 0;
 	drm->mode_config.min_height = 0;
 	drm->mode_config.max_width = max(adev->height, DRM_SHADOW_PLANE_MAX_WIDTH);
@@ -635,10 +634,6 @@ static int appletbdrm_setup_mode_config(struct appletbdrm_device *adev)
 
 	drm_mode_config_reset(drm);
 
-	ret = drm_dev_register(drm, 0);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to register DRM device\n");
-
 	return 0;
 }
 
@@ -648,6 +643,7 @@ static int appletbdrm_probe(struct usb_interface *intf,
 	struct usb_endpoint_descriptor *bulk_in, *bulk_out;
 	struct device *dev = &intf->dev;
 	struct appletbdrm_device *adev;
+	struct drm_device *drm;
 	int ret;
 
 	ret = usb_find_common_endpoints(intf->cur_altsetting, &bulk_in, &bulk_out, NULL, NULL);
@@ -661,6 +657,8 @@ static int appletbdrm_probe(struct usb_interface *intf,
 	adev->dev = dev;
 	adev->in_ep = bulk_in->bEndpointAddress;
 	adev->out_ep = bulk_out->bEndpointAddress;
+
+	drm = &adev->drm;
 
 	usb_set_intfdata(intf, adev);
 
@@ -676,7 +674,15 @@ static int appletbdrm_probe(struct usb_interface *intf,
 	if (ret)
 		return dev_err_probe(dev, ret, "Failed to clear display\n");
 
-	return appletbdrm_setup_mode_config(adev);
+	ret = appletbdrm_setup_mode_config(adev);
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to setup mode config\n");
+
+	ret = drm_dev_register(drm, 0);
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to register DRM device\n");
+
+	return 0;
 }
 
 static void appletbdrm_disconnect(struct usb_interface *intf)
