@@ -342,8 +342,12 @@ static int appletbdrm_flush_damage(struct appletbdrm_device *adev,
 
 	drm_atomic_helper_damage_iter_init(&iter, old_state, state);
 	drm_atomic_for_each_plane_damage(&iter, &damage) {
+		struct drm_rect dst_clip = state->dst;
 		struct iosys_map dst = IOSYS_MAP_INIT_VADDR(frame->buf);
 		u32 buf_size = rect_size(&damage);
+
+		if (!drm_rect_intersect(&dst_clip, &damage))
+			continue;
 
 		/*
 		 * The coordinates need to be translated to the coordinate
