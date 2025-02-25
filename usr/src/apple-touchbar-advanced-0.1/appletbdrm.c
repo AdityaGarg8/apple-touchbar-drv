@@ -5,9 +5,17 @@
  * Copyright (c) 2023 Kerem Karabay <kekrby@gmail.com>
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
+#include <linux/align.h>
+#include <linux/array_size.h>
+#include <linux/bitops.h>
+#include <linux/bug.h>
+#include <linux/container_of.h>
+#include <linux/dev_printk.h>
+#include <linux/err.h>
 #include <linux/module.h>
+#include <linux/overflow.h>
+#include <linux/slab.h>
+#include <linux/types.h>
 #include <linux/unaligned.h>
 #include <linux/usb.h>
 
@@ -26,21 +34,18 @@
 #include <drm/drm_plane.h>
 #include <drm/drm_probe_helper.h>
 
-#define __APPLETBDRM_MSG_STR4(str4)	((__le32 __force)((str4[0] << 24) | (str4[1] << 16) | (str4[2] << 8) | str4[3]))
-#define __APPLETBDRM_MSG_TOK4(tok4)	__APPLETBDRM_MSG_STR4(#tok4)
-
-#define APPLETBDRM_PIXEL_FORMAT		__APPLETBDRM_MSG_TOK4(RGBA) /* The actual format is BGR888 */
+#define APPLETBDRM_PIXEL_FORMAT		cpu_to_le32(0x52474241) /* RGBA, the actual format is BGR888 */
 #define APPLETBDRM_BITS_PER_PIXEL	24
 
-#define APPLETBDRM_MSG_CLEAR_DISPLAY	__APPLETBDRM_MSG_TOK4(CLRD)
-#define APPLETBDRM_MSG_GET_INFORMATION	__APPLETBDRM_MSG_TOK4(GINF)
-#define APPLETBDRM_MSG_UPDATE_COMPLETE	__APPLETBDRM_MSG_TOK4(UDCL)
-#define APPLETBDRM_MSG_SIGNAL_READINESS	__APPLETBDRM_MSG_TOK4(REDY)
+#define APPLETBDRM_MSG_CLEAR_DISPLAY	cpu_to_le32(0x434c5244) /* CLRD */
+#define APPLETBDRM_MSG_GET_INFORMATION	cpu_to_le32(0x47494e46) /* GINF */
+#define APPLETBDRM_MSG_UPDATE_COMPLETE	cpu_to_le32(0x5544434c) /* UDCL */
+#define APPLETBDRM_MSG_SIGNAL_READINESS	cpu_to_le32(0x52454459) /* REDY */
 
 #define APPLETBDRM_BULK_MSG_TIMEOUT	1000
 
 #define drm_to_adev(_drm)		container_of(_drm, struct appletbdrm_device, drm)
-#define adev_to_udev(adev)		interface_to_usbdev(to_usb_interface(adev->dev))
+#define adev_to_udev(adev)		interface_to_usbdev(to_usb_interface(adev->dmadev))
 
 struct appletbdrm_msg_request_header {
 	__le16 unk_00;
@@ -118,7 +123,6 @@ struct appletbdrm_fb_request_response {
 } __packed;
 
 struct appletbdrm_device {
-	struct device *dev;
 	struct device *dmadev;
 
 	unsigned int in_ep;
@@ -168,12 +172,12 @@ static int appletbdrm_send_request(struct appletbdrm_device *adev,
 		return -EIO;
 	}
 
-	return ret;
+	return 0;
 }
 
 static int appletbdrm_read_response(struct appletbdrm_device *adev,
 				    struct appletbdrm_msg_response_header *response,
-				    size_t size, u32 expected_response)
+				    size_t size, __le32 expected_response)
 {
 	struct usb_device *udev = adev_to_udev(adev);
 	struct drm_device *drm = &adev->drm;
@@ -200,17 +204,17 @@ retry:
 		}
 
 		drm_err(drm, "Encountered unexpected readiness signal\n");
-		return -EIO;
+		return -EINTR;
 	}
 
 	if (actual_size != size) {
 		drm_err(drm, "Actual size (%d) doesn't match expected size (%lu)\n",
 			actual_size, size);
-		return -EIO;
+		return -EBADMSG;
 	}
 
 	if (response->msg != expected_response) {
-		drm_err(drm, "Unexpected response from device (expected %p4ch found %p4ch)\n",
+		drm_err(drm, "Unexpected response from device (expected %p4cc found %p4cc)\n",
 			&expected_response, &response->msg);
 		return -EIO;
 	}
@@ -218,7 +222,7 @@ retry:
 	return 0;
 }
 
-static int appletbdrm_send_msg(struct appletbdrm_device *adev, u32 msg)
+static int appletbdrm_send_msg(struct appletbdrm_device *adev, __le32 msg)
 {
 	struct appletbdrm_msg_simple_request *request;
 	int ret;
@@ -255,7 +259,7 @@ static int appletbdrm_get_information(struct appletbdrm_device *adev)
 	struct appletbdrm_msg_information *info;
 	struct drm_device *drm = &adev->drm;
 	u8 bits_per_pixel;
-	u32 pixel_format;
+	__le32 pixel_format;
 	int ret;
 
 	info = kzalloc(sizeof(*info), GFP_KERNEL);
@@ -284,7 +288,7 @@ static int appletbdrm_get_information(struct appletbdrm_device *adev)
 	}
 
 	if (pixel_format != APPLETBDRM_PIXEL_FORMAT) {
-		drm_err(drm, "Encountered unknown pixel format (%p4ch)\n", &pixel_format);
+		drm_err(drm, "Encountered unknown pixel format (%p4cc)\n", &pixel_format);
 		ret = -EINVAL;
 		goto free_info;
 	}
@@ -297,7 +301,8 @@ free_info:
 
 static u32 rect_size(struct drm_rect *rect)
 {
-	return drm_rect_width(rect) * drm_rect_height(rect) * (APPLETBDRM_BITS_PER_PIXEL / 8);
+	return drm_rect_width(rect) * drm_rect_height(rect) *
+		(BITS_TO_BYTES(APPLETBDRM_BITS_PER_PIXEL));
 }
 
 static int appletbdrm_connector_helper_get_modes(struct drm_connector *connector)
@@ -399,7 +404,7 @@ static int appletbdrm_flush_damage(struct appletbdrm_device *adev,
 	request->header.unk_04 = cpu_to_le32(9);
 	request->header.size = cpu_to_le32(request_size - sizeof(request->header));
 	request->unk_10 = cpu_to_le16(1);
-	request->msg_id = timestamp & 0xff;
+	request->msg_id = timestamp;
 
 	frame = (struct appletbdrm_frame *)request->data;
 
@@ -519,13 +524,16 @@ static struct drm_plane_state *appletbdrm_primary_plane_duplicate_state(struct d
 		return NULL;
 
 	old_appletbdrm_state = to_appletbdrm_plane_state(plane->state);
-	appletbdrm_state = kmemdup(old_appletbdrm_state, sizeof(*appletbdrm_state), GFP_KERNEL);
+	appletbdrm_state = kzalloc(sizeof(*appletbdrm_state), GFP_KERNEL);
 	if (!appletbdrm_state)
 		return NULL;
 
 	/* Request and response are not duplicated and are allocated in .atomic_check */
 	appletbdrm_state->request = NULL;
 	appletbdrm_state->response = NULL;
+
+	appletbdrm_state->request_size = 0;
+	appletbdrm_state->frames_size = 0;
 
 	new_shadow_plane_state = &appletbdrm_state->base;
 
@@ -637,12 +645,13 @@ static int appletbdrm_setup_mode_config(struct appletbdrm_device *adev)
 	struct drm_crtc *crtc;
 	struct drm_encoder *encoder;
 	struct drm_device *drm = &adev->drm;
-	struct device *dev = adev->dev;
 	int ret;
 
 	ret = drmm_mode_config_init(drm);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to initialize mode configuration\n");
+	if (ret) {
+		drm_err(drm, "Failed to initialize mode configuration\n");
+		return ret;
+	}
 
 	primary_plane = &adev->primary_plane;
 	ret = drm_universal_plane_init(drm, primary_plane, 0,
@@ -651,23 +660,32 @@ static int appletbdrm_setup_mode_config(struct appletbdrm_device *adev)
 				       ARRAY_SIZE(appletbdrm_primary_plane_formats),
 				       NULL,
 				       DRM_PLANE_TYPE_PRIMARY, NULL);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to initialize universal plane object\n");
+	if (ret) {
+		drm_err(drm, "Failed to initialize universal plane object\n");
+		return ret;
+	}
+
 	drm_plane_helper_add(primary_plane, &appletbdrm_primary_plane_helper_funcs);
 	drm_plane_enable_fb_damage_clips(primary_plane);
 
 	crtc = &adev->crtc;
 	ret = drm_crtc_init_with_planes(drm, crtc, primary_plane, NULL,
 					&appletbdrm_crtc_funcs, NULL);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to initialize CRTC object\n");
+	if (ret) {
+		drm_err(drm, "Failed to initialize CRTC object\n");
+		return ret;
+	}
+
 	drm_crtc_helper_add(crtc, &appletbdrm_crtc_helper_funcs);
 
 	encoder = &adev->encoder;
 	ret = drm_encoder_init(drm, encoder, &appletbdrm_encoder_funcs,
 			       DRM_MODE_ENCODER_DAC, NULL);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to initialize encoder\n");
+	if (ret) {
+		drm_err(drm, "Failed to initialize encoder\n");
+		return ret;
+	}
+
 	encoder->possible_crtcs = drm_crtc_mask(crtc);
 
 	/*
@@ -675,10 +693,8 @@ static int appletbdrm_setup_mode_config(struct appletbdrm_device *adev)
 	 * coordinate system of the framebuffer in that the x and y axes are
 	 * swapped, and that the y axis is inverted; so what the device reports
 	 * as the height is actually the width of the framebuffer and vice
-	 * versa
+	 * versa.
 	 */
-	drm->mode_config.min_width = 0;
-	drm->mode_config.min_height = 0;
 	drm->mode_config.max_width = max(adev->height, DRM_SHADOW_PLANE_MAX_WIDTH);
 	drm->mode_config.max_height = max(adev->width, DRM_SHADOW_PLANE_MAX_HEIGHT);
 	drm->mode_config.preferred_depth = APPLETBDRM_BITS_PER_PIXEL;
@@ -692,26 +708,34 @@ static int appletbdrm_setup_mode_config(struct appletbdrm_device *adev)
 
 	ret = drm_connector_init(drm, connector,
 				 &appletbdrm_connector_funcs, DRM_MODE_CONNECTOR_USB);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to initialize connector\n");
+	if (ret) {
+		drm_err(drm, "Failed to initialize connector\n");
+		return ret;
+	}
 
 	drm_connector_helper_add(connector, &appletbdrm_connector_helper_funcs);
 
 	ret = drm_connector_set_panel_orientation(connector,
 						  DRM_MODE_PANEL_ORIENTATION_RIGHT_UP);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to set panel orientation\n");
+	if (ret) {
+		drm_err(drm, "Failed to set panel orientation\n");
+		return ret;
+	}
 
 	connector->display_info.non_desktop = true;
 	ret = drm_object_property_set_value(&connector->base,
 					    drm->mode_config.non_desktop_property, true);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to set non-desktop property\n");
+	if (ret) {
+		drm_err(drm, "Failed to set non-desktop property\n");
+		return ret;
+	}
 
 	ret = drm_connector_attach_encoder(connector, encoder);
 
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to initialize simple display pipe\n");
+	if (ret) {
+		drm_err(drm, "Failed to initialize simple display pipe\n");
+		return ret;
+	}
 
 	drm_mode_config_reset(drm);
 
@@ -724,44 +748,56 @@ static int appletbdrm_probe(struct usb_interface *intf,
 	struct usb_endpoint_descriptor *bulk_in, *bulk_out;
 	struct device *dev = &intf->dev;
 	struct appletbdrm_device *adev;
-	struct drm_device *drm;
+	struct drm_device *drm = NULL;
 	int ret;
 
 	ret = usb_find_common_endpoints(intf->cur_altsetting, &bulk_in, &bulk_out, NULL, NULL);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to find bulk endpoints\n");
+	if (ret) {
+		drm_err(drm, "Failed to find bulk endpoints\n");
+		return ret;
+	}
 
 	adev = devm_drm_dev_alloc(dev, &appletbdrm_drm_driver, struct appletbdrm_device, drm);
 	if (IS_ERR(adev))
 		return PTR_ERR(adev);
 
-	adev->dev = dev;
 	adev->in_ep = bulk_in->bEndpointAddress;
 	adev->out_ep = bulk_out->bEndpointAddress;
+	adev->dmadev = dev;
 
 	drm = &adev->drm;
 
 	usb_set_intfdata(intf, adev);
 
 	ret = appletbdrm_get_information(adev);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to get display information\n");
+	if (ret) {
+		drm_err(drm, "Failed to get display information\n");
+		return ret;
+	}
 
 	ret = appletbdrm_signal_readiness(adev);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to signal readiness\n");
+	if (ret) {
+		drm_err(drm, "Failed to signal readiness\n");
+		return ret;
+	}
 
 	ret = appletbdrm_setup_mode_config(adev);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to setup mode config\n");
+	if (ret) {
+		drm_err(drm, "Failed to setup mode config\n");
+		return ret;
+	}
 
 	ret = drm_dev_register(drm, 0);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to register DRM device\n");
+	if (ret) {
+		drm_err(drm, "Failed to register DRM device\n");
+		return ret;
+	}
 
 	ret = appletbdrm_clear_display(adev);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to clear display\n");
+	if (ret) {
+		drm_err(drm, "Failed to clear display\n");
+		return ret;
+	}
 
 	return 0;
 }
@@ -771,6 +807,7 @@ static void appletbdrm_disconnect(struct usb_interface *intf)
 	struct appletbdrm_device *adev = usb_get_intfdata(intf);
 	struct drm_device *drm = &adev->drm;
 
+	put_device(adev->dmadev);
 	drm_dev_unplug(drm);
 	drm_atomic_helper_shutdown(drm);
 }
