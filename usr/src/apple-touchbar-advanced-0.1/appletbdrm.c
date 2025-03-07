@@ -10,7 +10,6 @@
 #include <linux/bitops.h>
 #include <linux/bug.h>
 #include <linux/container_of.h>
-#include <linux/dev_printk.h>
 #include <linux/err.h>
 #include <linux/module.h>
 #include <linux/overflow.h>
@@ -32,6 +31,7 @@
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_gem_shmem_helper.h>
 #include <drm/drm_plane.h>
+#include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 
 #define APPLETBDRM_PIXEL_FORMAT		cpu_to_le32(0x52474241) /* RGBA, the actual format is BGR888 */
@@ -167,7 +167,7 @@ static int appletbdrm_send_request(struct appletbdrm_device *adev,
 	}
 
 	if (actual_size != size) {
-		drm_err(drm, "Actual size (%d) doesn't match expected size (%lu)\n",
+		drm_err(drm, "Actual size (%d) doesn't match expected size (%zu)\n",
 			actual_size, size);
 		return -EIO;
 	}
@@ -208,7 +208,7 @@ retry:
 	}
 
 	if (actual_size != size) {
-		drm_err(drm, "Actual size (%d) doesn't match expected size (%lu)\n",
+		drm_err(drm, "Actual size (%d) doesn't match expected size (%zu)\n",
 			actual_size, size);
 		return -EBADMSG;
 	}
@@ -517,13 +517,11 @@ static void appletbdrm_primary_plane_reset(struct drm_plane *plane)
 static struct drm_plane_state *appletbdrm_primary_plane_duplicate_state(struct drm_plane *plane)
 {
 	struct drm_shadow_plane_state *new_shadow_plane_state;
-	struct appletbdrm_plane_state *old_appletbdrm_state;
 	struct appletbdrm_plane_state *appletbdrm_state;
 
 	if (WARN_ON(!plane->state))
 		return NULL;
 
-	old_appletbdrm_state = to_appletbdrm_plane_state(plane->state);
 	appletbdrm_state = kzalloc(sizeof(*appletbdrm_state), GFP_KERNEL);
 	if (!appletbdrm_state)
 		return NULL;
@@ -753,7 +751,7 @@ static int appletbdrm_probe(struct usb_interface *intf,
 
 	ret = usb_find_common_endpoints(intf->cur_altsetting, &bulk_in, &bulk_out, NULL, NULL);
 	if (ret) {
-		drm_err(drm, "Failed to find bulk endpoints\n");
+		drm_err(drm, "appletbdrm: Failed to find bulk endpoints\n");
 		return ret;
 	}
 
@@ -807,7 +805,6 @@ static void appletbdrm_disconnect(struct usb_interface *intf)
 	struct appletbdrm_device *adev = usb_get_intfdata(intf);
 	struct drm_device *drm = &adev->drm;
 
-	put_device(adev->dmadev);
 	drm_dev_unplug(drm);
 	drm_atomic_helper_shutdown(drm);
 }
